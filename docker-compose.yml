@@ -1,0 +1,30 @@
+# MySQL 8.0 for ERP Little Horizons.
+# Usage: copy .env.example to .env, set the passwords and run `docker compose up -d`.
+# On the first start (empty volume) docs/database.sql is executed automatically (DDL + DML).
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: lh-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: erp_little_horizons
+      MYSQL_USER: ${MYSQL_USER:-lh_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      TZ: America/Bogota
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - lh_mysql_data:/var/lib/mysql
+      - ./docs/database.sql:/docker-entrypoint-initdb.d/01-database.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  lh_mysql_data:

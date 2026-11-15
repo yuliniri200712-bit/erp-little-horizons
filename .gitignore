@@ -1,0 +1,17 @@
+# Secrets / local configuration
+.env
+config/db.properties
+
+# Build output
+target/
+out/
+*.class
+
+# Runtime output
+error_log.txt
+facturas/
+
+# IDE
+.idea/
+*.iml
+.vscode/

@@ -1,0 +1,6 @@
+# Copy this file to config/db.properties and use the same user/password as in .env.
+# config/db.properties is ignored by git.
+# Environment variables LH_DB_URL, LH_DB_USER and LH_DB_PASSWORD override these values.
+db.url=jdbc:mysql://localhost:3306/erp_little_horizons?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=America/Bogota&characterEncoding=UTF-8
+db.user=lh_app
+db.password=cambia_esta_clave_app
