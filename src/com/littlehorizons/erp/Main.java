@@ -86,6 +86,7 @@ public final class Main {
                 extracurricular,
                 finance,
                 resources,
-                new ReportController(view, services.reports(), academic, extracurricular, finance, resources)));
+                new ReportController(view, services.reports(), services.exports(), academic, extracurricular, finance,
+                        resources)));
     }
 }

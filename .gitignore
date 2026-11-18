@@ -10,6 +10,7 @@ out/
 # Runtime output
 error_log.txt
 facturas/
+reportes/
 
 # IDE
 .idea/
