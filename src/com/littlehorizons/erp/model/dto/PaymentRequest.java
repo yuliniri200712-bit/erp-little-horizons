@@ -1,4 +1,4 @@
-package com.littlehorizons.erp.service;
+package com.littlehorizons.erp.model.dto;
 
 import com.littlehorizons.erp.model.enums.PaymentMethod;
 import com.littlehorizons.erp.model.enums.PaymentPeriod;
