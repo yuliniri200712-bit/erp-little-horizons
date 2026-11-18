@@ -19,8 +19,10 @@
 --      ellas no es posible calcular deudas con más de un mes de atraso.
 --   7. pagos.metodo_pago limitado a Efectivo | Transferencia | Tarjeta
 --      (según especificación) y pagos.id_cargo enlaza el pago con la deuda.
---   8. facturas.id_pago ahora es UNIQUE (una factura por pago) y guarda
---      subtotal, IVA y total emitidos.
+--   8. facturas ya no apunta a un solo pago: guarda estudiante, cliente
+--      (acudiente adquiriente), fecha y hora, subtotal, IVA, total, CUFE y la
+--      resolución vigente. Sus líneas van en detalle_factura (nueva): una por
+--      pago, y cada pago se factura una sola vez (id_pago UNIQUE).
 --   9. participantes_evento.posicion_obtenida pasa a ENUM con los puestos
 --      definidos en la especificación.
 --  10. consecutivos (nueva): numeración segura de recibos y facturas.
@@ -422,21 +424,42 @@ CREATE TABLE pagos (
 
 CREATE TABLE facturas (
     id_factura INT AUTO_INCREMENT PRIMARY KEY,
-    numero_factura VARCHAR(50) NOT NULL UNIQUE COMMENT 'Número consecutivo de factura',
-    id_pago INT NOT NULL UNIQUE COMMENT 'Pago asociado a esta factura (una factura por pago)',
-    fecha_emision DATE NOT NULL,
-    subtotal DECIMAL(12,2) NOT NULL,
+    numero_factura VARCHAR(50) NOT NULL UNIQUE COMMENT 'Número consecutivo de factura (FE-000123)',
+    id_estudiante INT NOT NULL COMMENT 'Estudiante al que corresponden los pagos facturados',
+    id_acudiente INT NOT NULL COMMENT 'Cliente (adquiriente): acudiente a cuyo nombre se factura',
+    fecha_emision DATETIME NOT NULL COMMENT 'Fecha y hora de emisión (hora Colombia, UTC-05:00)',
+    subtotal DECIMAL(12,2) NOT NULL COMMENT 'Suma de las líneas sin IVA',
     valor_iva DECIMAL(12,2) NOT NULL DEFAULT 0.00,
-    total DECIMAL(12,2) NOT NULL,
-    cufe VARCHAR(100) COMMENT 'Código Único de Factura Electrónica (SIMULADO - académico)',
-    nombre_archivo_pdf VARCHAR(255) COMMENT 'Nombre del archivo PDF generado',
+    total DECIMAL(12,2) NOT NULL COMMENT 'Lo pagado: subtotal + IVA',
+    cufe CHAR(96) NOT NULL UNIQUE COMMENT 'Código Único de Factura Electrónica, SHA-384 (SIMULADO - académico)',
+    resolucion VARCHAR(255) NOT NULL COMMENT 'Resolución de habilitación vigente al emitir (SIMULADA)',
+    nombre_archivo_pdf VARCHAR(255) COMMENT 'Nombre del archivo PDF generado (el TXT tiene el mismo nombre)',
     ruta_archivo VARCHAR(500) COMMENT 'Ruta completa donde se guardó el PDF',
     fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (id_pago) REFERENCES pagos(id_pago) ON DELETE CASCADE,
+    FOREIGN KEY (id_estudiante) REFERENCES estudiantes(id_estudiante),
+    FOREIGN KEY (id_acudiente) REFERENCES acudientes(id_acudiente),
     CHECK (subtotal >= 0 AND valor_iva >= 0 AND total = subtotal + valor_iva),
     INDEX idx_numero_factura (numero_factura),
-    INDEX idx_fecha_emision (fecha_emision)
-) ENGINE=InnoDB COMMENT='Facturas generadas (simulación académica, sin validación DIAN)';
+    INDEX idx_fecha_emision (fecha_emision),
+    INDEX idx_factura_estudiante (id_estudiante)
+) ENGINE=InnoDB COMMENT='Facturas electrónicas emitidas (simulación académica, sin validación DIAN)';
+
+CREATE TABLE detalle_factura (
+    id_detalle INT AUTO_INCREMENT PRIMARY KEY,
+    id_factura INT NOT NULL,
+    id_pago INT NOT NULL UNIQUE COMMENT 'Pago facturado: cada pago aparece en una sola factura',
+    descripcion VARCHAR(255) NOT NULL,
+    cantidad INT NOT NULL DEFAULT 1,
+    valor_unitario DECIMAL(12,2) NOT NULL COMMENT 'Valor sin IVA',
+    porcentaje_iva DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+    valor_iva DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    total_linea DECIMAL(12,2) NOT NULL COMMENT 'Lo pagado: cantidad x valor unitario + IVA',
+    FOREIGN KEY (id_factura) REFERENCES facturas(id_factura) ON DELETE CASCADE,
+    FOREIGN KEY (id_pago) REFERENCES pagos(id_pago),
+    CHECK (cantidad > 0 AND valor_unitario >= 0 AND valor_iva >= 0),
+    CHECK (porcentaje_iva BETWEEN 0 AND 100),
+    CHECK (total_linea = cantidad * valor_unitario + valor_iva)
+) ENGINE=InnoDB COMMENT='Líneas de cada factura: una por pago facturado';
 
 CREATE TABLE consecutivos (
     tipo_documento VARCHAR(30) PRIMARY KEY COMMENT 'RECIBO, FACTURA',
@@ -3475,25 +3498,43 @@ INSERT INTO pagos (id_estudiante, id_acudiente, id_concepto, id_cargo, monto_pag
 (36, 32, 2, 188, 350000.00, '2026-10-05', 'Tarjeta', 'RC-000173', 2026, 'IV', NULL),
 (38, 7, 1, 190, 500000.00, '2026-01-26', 'Efectivo', 'RC-000174', 2026, 'Anual', NULL);
 
--- facturas (12 registros)
-INSERT INTO facturas (numero_factura, id_pago, fecha_emision, subtotal, valor_iva, total, cufe, nombre_archivo_pdf, ruta_archivo) VALUES
-('FE-000001', 132, '2026-11-09', 210000.00, 0.00, 210000.00, '5d49e669c82563ad44c3ad07f695fd33ea46fb005561c5cb6ca7f3bf608a672197c2231eeb9281678d49655a66fa9b50', 'factura_000001.pdf', NULL),
-('FE-000002', 147, '2026-11-09', 350000.00, 0.00, 350000.00, 'f0d2e584fb3e1e76aafc2fc98f5e3bd1e3bdaadd9a41ccf97941bb62cd529d4b382230fa446b14ffb2e9551ef25d323f', 'factura_000002.pdf', NULL),
-('FE-000003', 155, '2026-11-09', 315000.00, 0.00, 315000.00, '9b9b2e03e86b443a5f9659617eaeb690102b0bb7222e59c0da52b0c0601655ae1a380eacca48818601f638aab2b9c879', 'factura_000003.pdf', NULL),
-('FE-000004', 22, '2026-11-10', 175000.00, 0.00, 175000.00, '91c48716358a0a73f6c477fc81a3215c5f8e9b25dba4bf393982bfa38a1dcd012043e7ccd4478cf2b4e374c4129cdc65', 'factura_000004.pdf', NULL),
-('FE-000005', 46, '2026-11-10', 350000.00, 0.00, 350000.00, '8aa87f9638de3f44f838aa22ff8016729bbae17625fbd1fc0ae29352d844c02e186b135cabaad88874bec7509aff8bc5', 'factura_000005.pdf', NULL),
-('FE-000006', 51, '2026-11-10', 350000.00, 0.00, 350000.00, '271503ae168d59b0c9163b00cb6a011ed0780da63617935de3f03aec5813f1bc0e4e02c1883d27e10626672ecf56f4a0', 'factura_000006.pdf', NULL),
-('FE-000007', 142, '2026-11-10', 350000.00, 0.00, 350000.00, 'b78abbd37846edcfcbfa16a98bc63ec2a4e743457d53d49e1c7ecb740f167b8284b91d22d897d81b20371b87d9d36de6', 'factura_000007.pdf', NULL),
-('FE-000008', 39, '2026-11-13', 350000.00, 0.00, 350000.00, '33a5af634e9e53381fbd82e0fd4f0a21cb4dc6a5a0aa40e40d2030673c07bff847fe1fcae56ed3054d095279f9fff9ee', 'factura_000008.pdf', NULL),
-('FE-000009', 70, '2026-11-13', 315000.00, 0.00, 315000.00, '7784d4fb9aac82ceb2af5092b16c5f0ba3ef2f1b49e4c2ae92264daf576114a48b2a2b1adac3d29beb1589e888fdcd77', 'factura_000009.pdf', NULL),
-('FE-000010', 104, '2026-11-13', 315000.00, 0.00, 315000.00, '32960bc8f96829b9ebf64140a6d956f0bd59ddeae7fe362d243fac6e7cfc64df3ca68c897ee7f1de8537b6d51273dbca', 'factura_000010.pdf', NULL),
-('FE-000011', 137, '2026-11-13', 350000.00, 0.00, 350000.00, 'abafdc26d33641639416ea160c8bbcd4ff1b34491742949076f0751c53c964dd82099aa207107ec98a1c9fc32a41e143', 'factura_000011.pdf', NULL),
-('FE-000012', 169, '2026-11-13', 315000.00, 0.00, 315000.00, '4ab1463ba73ced0111ef0563d68054c0a89f99180e3aa1c9c5da9f667e77044fa8de04b95167a86c942348daa3acf668', 'factura_000012.pdf', NULL);
+-- facturas (13 registros)
+INSERT INTO facturas (numero_factura, id_estudiante, id_acudiente, fecha_emision, subtotal, valor_iva, total, cufe, resolucion, nombre_archivo_pdf, ruta_archivo) VALUES
+('FE-000001', 27, 5, '2026-11-09 08:30:00', 210000.00, 0.00, 210000.00, '1e6745cbda6754f56158dacacc19fa010de519debb2b320a474449236c88e310d4f8ead708ac28d2732fcf26b57852f0', 'Resolución DIAN No. 18760000000001 del 2026-01-15, prefijo FE, rango FE-000001 a FE-100000, vigente hasta 2028-01-15 (SIMULADA)', 'factura_000001.pdf', NULL),
+('FE-000002', 30, 28, '2026-11-09 08:47:15', 350000.00, 0.00, 350000.00, '86e0a196485d66b409df3d0ee1628f14f598efb9696005522ffd4c820756bf398507d5d40b2a1d29bbfd23ac1b7c7567', 'Resolución DIAN No. 18760000000001 del 2026-01-15, prefijo FE, rango FE-000001 a FE-100000, vigente hasta 2028-01-15 (SIMULADA)', 'factura_000002.pdf', NULL),
+('FE-000003', 32, 6, '2026-11-09 09:04:30', 315000.00, 0.00, 315000.00, 'b0bc5022144355e8627b137eeeaa1d421adda0228687eb1737c55a5ef44c99bb14f936a196e9dea1692f34bc78012ea2', 'Resolución DIAN No. 18760000000001 del 2026-01-15, prefijo FE, rango FE-000001 a FE-100000, vigente hasta 2028-01-15 (SIMULADA)', 'factura_000003.pdf', NULL),
+('FE-000004', 4, 10, '2026-11-10 08:30:00', 175000.00, 0.00, 175000.00, '5d18a93dccf10f648e47338366063d0d62bfabefa1a583afe975d5b833998e1cfa0b480eb5804f5f19bfc932cc2b8420', 'Resolución DIAN No. 18760000000001 del 2026-01-15, prefijo FE, rango FE-000001 a FE-100000, vigente hasta 2028-01-15 (SIMULADA)', 'factura_000004.pdf', NULL),
+('FE-000005', 9, 13, '2026-11-10 08:47:15', 350000.00, 0.00, 350000.00, '64ff353fd75b5df545d0e3264137cb4c97352317c1f0835fdf69bbe22afa05d3a503eadcdc5a1bfb1d33397a4d17b600', 'Resolución DIAN No. 18760000000001 del 2026-01-15, prefijo FE, rango FE-000001 a FE-100000, vigente hasta 2028-01-15 (SIMULADA)', 'factura_000005.pdf', NULL),
+('FE-000006', 10, 14, '2026-11-10 09:04:30', 350000.00, 0.00, 350000.00, '2e5c5f0f1449b7b50a9fa7e4de74d91d3408596e3a8a1c544637b6efe6fe9ad20ad1fba462b6b77063681e7cc7eb573d', 'Resolución DIAN No. 18760000000001 del 2026-01-15, prefijo FE, rango FE-000001 a FE-100000, vigente hasta 2028-01-15 (SIMULADA)', 'factura_000006.pdf', NULL),
+('FE-000007', 29, 27, '2026-11-10 09:21:10', 350000.00, 0.00, 350000.00, 'c16c666119ae8ef3e4489fa38d737a2d318420bec95a8edc58b8f19941e33246a1ee7f7b752b44565baa126a3842a1ce', 'Resolución DIAN No. 18760000000001 del 2026-01-15, prefijo FE, rango FE-000001 a FE-100000, vigente hasta 2028-01-15 (SIMULADA)', 'factura_000007.pdf', NULL),
+('FE-000008', 7, 12, '2026-11-13 08:30:00', 350000.00, 0.00, 350000.00, 'a4502de50d48d14d106bed87409d3b54b310fcf74050a89c22098d48e507e1fec220084781b5a90aa4adc7158062aedc', 'Resolución DIAN No. 18760000000001 del 2026-01-15, prefijo FE, rango FE-000001 a FE-100000, vigente hasta 2028-01-15 (SIMULADA)', 'factura_000008.pdf', NULL),
+('FE-000009', 14, 1, '2026-11-13 08:47:15', 315000.00, 0.00, 315000.00, '47334629660996be44538d9d26d71f2c4195a22b4aad1cbfbfd68f772814098654898fb412f15852f2b10230ef634cf8', 'Resolución DIAN No. 18760000000001 del 2026-01-15, prefijo FE, rango FE-000001 a FE-100000, vigente hasta 2028-01-15 (SIMULADA)', 'factura_000009.pdf', NULL),
+('FE-000010', 21, 3, '2026-11-13 09:04:30', 315000.00, 0.00, 315000.00, '170ff867136152b9a17a1f17efbb84e971a9af57bf5206a3e9142107f768eab3b39edcee5df40cc81bc9e9da60a0eb27', 'Resolución DIAN No. 18760000000001 del 2026-01-15, prefijo FE, rango FE-000001 a FE-100000, vigente hasta 2028-01-15 (SIMULADA)', 'factura_000010.pdf', NULL),
+('FE-000011', 28, 26, '2026-11-13 09:21:10', 350000.00, 0.00, 350000.00, '480241f55a318b23a95873e1a45499873865c24f66a7f2fd4e879228733c0c41e1672a60833ae2a2f18ba839ec4ee428', 'Resolución DIAN No. 18760000000001 del 2026-01-15, prefijo FE, rango FE-000001 a FE-100000, vigente hasta 2028-01-15 (SIMULADA)', 'factura_000011.pdf', NULL),
+('FE-000012', 35, 7, '2026-11-13 09:38:25', 315000.00, 0.00, 315000.00, '32ce113f357ea1bb218abefa215240c4abc0aba61591d4a653aaea061827cb2ccf9822547e22252268e770415a9d71b0', 'Resolución DIAN No. 18760000000001 del 2026-01-15, prefijo FE, rango FE-000001 a FE-100000, vigente hasta 2028-01-15 (SIMULADA)', 'factura_000012.pdf', NULL),
+('FE-000013', 1, 1, '2026-11-14 09:20:15', 750000.00, 47500.00, 797500.00, 'e88706c49780108e84d7cd7aed3bb51b05da4b313804efcd2b6b214271d74ce8a2b92406886aef5b7af15369fdb7bc1f', 'Resolución DIAN No. 18760000000001 del 2026-01-15, prefijo FE, rango FE-000001 a FE-100000, vigente hasta 2028-01-15 (SIMULADA)', 'factura_000013.pdf', NULL);
+
+-- detalle_factura (14 registros: una línea por pago facturado)
+INSERT INTO detalle_factura (id_factura, id_pago, descripcion, cantidad, valor_unitario, porcentaje_iva, valor_iva, total_linea) VALUES
+(1, 132, 'Pensión noviembre 2026', 1, 210000.00, 0.00, 0.00, 210000.00),
+(2, 147, 'Pensión noviembre 2026', 1, 350000.00, 0.00, 0.00, 350000.00),
+(3, 155, 'Pensión noviembre 2026', 1, 315000.00, 0.00, 0.00, 315000.00),
+(4, 22, 'Pensión noviembre 2026', 1, 175000.00, 0.00, 0.00, 175000.00),
+(5, 46, 'Pensión noviembre 2026', 1, 350000.00, 0.00, 0.00, 350000.00),
+(6, 51, 'Pensión noviembre 2026', 1, 350000.00, 0.00, 0.00, 350000.00),
+(7, 142, 'Pensión noviembre 2026', 1, 350000.00, 0.00, 0.00, 350000.00),
+(8, 39, 'Pensión noviembre 2026', 1, 350000.00, 0.00, 0.00, 350000.00),
+(9, 70, 'Pensión noviembre 2026', 1, 315000.00, 0.00, 0.00, 315000.00),
+(10, 104, 'Pensión noviembre 2026', 1, 315000.00, 0.00, 0.00, 315000.00),
+(11, 137, 'Pensión noviembre 2026', 1, 350000.00, 0.00, 0.00, 350000.00),
+(12, 169, 'Pensión noviembre 2026', 1, 315000.00, 0.00, 0.00, 315000.00),
+(13, 1, 'Matrícula año 2026', 1, 500000.00, 0.00, 0.00, 500000.00),
+(13, 6, 'Uniforme escolar 2026', 1, 250000.00, 19.00, 47500.00, 297500.00);
 
 -- consecutivos (2 registros)
 INSERT INTO consecutivos (tipo_documento, prefijo, ultimo_numero) VALUES
 ('RECIBO', 'RC', 174),
-('FACTURA', 'FE', 12);
+('FACTURA', 'FE', 13);
 
 -- recursos (42 registros)
 INSERT INTO recursos (codigo_recurso, nombre_recurso, id_categoria, descripcion, fecha_adquisicion, ubicacion_fisica, estado_recurso) VALUES

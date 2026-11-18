@@ -2,6 +2,7 @@ package com.littlehorizons.erp.controller;
 
 import com.littlehorizons.erp.model.Charge;
 import com.littlehorizons.erp.model.Guardian;
+import com.littlehorizons.erp.model.Invoice;
 import com.littlehorizons.erp.model.GuardianLink;
 import com.littlehorizons.erp.model.Payment;
 import com.littlehorizons.erp.model.PaymentConcept;
@@ -10,23 +11,23 @@ import com.littlehorizons.erp.model.enums.AdjustmentType;
 import com.littlehorizons.erp.model.enums.PaymentMethod;
 import com.littlehorizons.erp.model.enums.PaymentPeriod;
 import com.littlehorizons.erp.model.report.DebtRow;
-import com.littlehorizons.erp.service.BulkChargeResult;
+import com.littlehorizons.erp.model.dto.BulkChargeResult;
+import com.littlehorizons.erp.model.dto.InvoiceDocument;
 import com.littlehorizons.erp.service.FinanceService;
-import com.littlehorizons.erp.service.PaymentRequest;
-import com.littlehorizons.erp.service.PaymentResult;
+import com.littlehorizons.erp.model.dto.PaymentRequest;
+import com.littlehorizons.erp.model.dto.PaymentResult;
 import com.littlehorizons.erp.service.StudentService;
-import com.littlehorizons.erp.util.ErrorLogger;
 import com.littlehorizons.erp.util.Formatter;
+import com.littlehorizons.erp.util.SelectionParser;
 import com.littlehorizons.erp.view.ConsoleView;
 import com.littlehorizons.erp.view.FinanceView;
 
-import java.io.IOException;
 import java.math.BigDecimal;
-import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 
-/** Menu 5 - Gestión Financiera: concepts, scholarships, charges, payments, invoices and arrears. */
+/** Menu 5 - Gestión Financiera: concepts, scholarships, charges, payments, electronic invoices and arrears. */
 public class FinanceController extends BaseController {
 
     private final FinanceService service;
@@ -45,7 +46,7 @@ public class FinanceController extends BaseController {
     @Override
     public void start() {
         runMenu("GESTIÓN FINANCIERA", List.of(
-                Option.action("Registrar pago (genera factura PDF)", this::registerPayment),
+                Option.action("Registrar pago (emite la factura electrónica)", this::registerPayment),
                 Option.action("Historial de pagos de un estudiante", () -> {
                     Student s = picker.student();
                     List<Payment> payments = service.paymentsOfStudent(s.id());
@@ -64,7 +65,8 @@ public class FinanceController extends BaseController {
                 Option.submenu("Cobros (cuentas por cobrar)", this::chargesMenu),
                 Option.submenu("Conceptos de pago", this::conceptsMenu),
                 Option.submenu("Becas y descuentos", this::adjustmentsMenu),
-                Option.submenu("Facturas y pagos registrados", this::invoicesMenu)));
+                Option.submenu("Facturas electrónicas", this::invoicesMenu),
+                Option.submenu("Corregir o anular pagos", this::paymentMaintenanceMenu)));
     }
 
     // ---------------------------------------------------------------- payments
@@ -103,7 +105,7 @@ public class FinanceController extends BaseController {
         view.field("Estudiante", student.fullName());
         view.field("Monto", Formatter.money(amount));
         view.field("Método", method);
-        if (!view.confirm("¿Confirmar el pago y generar la factura?")) {
+        if (!view.confirm("¿Confirmar el pago y emitir la factura?")) {
             view.warning("Pago no registrado.");
             return;
         }
@@ -221,22 +223,72 @@ public class FinanceController extends BaseController {
                 })));
     }
 
-    // ---------------------------------------------------------------- invoices & payment maintenance
+    // ---------------------------------------------------------------- electronic invoices
 
     private void invoicesMenu() {
-        runMenu("FACTURAS Y PAGOS", List.of(
-                Option.action("Listar facturas emitidas", () -> financeView.showInvoices(service.listInvoices())),
-                Option.action("Generar / regenerar PDF de la factura de un pago", () -> {
-                    Payment payment = view.readValidated("ID del pago o número de recibo (ej: RC-000123)", service::findPayment);
-                    try {
-                        Path pdf = service.generateInvoicePdf(payment.id());
-                        view.success("Factura PDF generada en: " + pdf.toAbsolutePath());
-                        view.warning("Recuerde: es una SIMULACIÓN ACADÉMICA, sin validación de la DIAN.");
-                    } catch (IOException e) {
-                        ErrorLogger.error("Invoice PDF for payment " + payment.id(), e);
-                        view.error("No se pudo generar el PDF: " + e.getMessage());
-                    }
+        runMenu("FACTURAS ELECTRÓNICAS (SIMULADAS)", List.of(
+                Option.action("Emitir factura de pagos sin facturar (genera TXT y PDF)", this::issueInvoice),
+                Option.action("Ver una factura por su número", () ->
+                        financeView.printInvoice(service.viewInvoice(readInvoiceNumber()))),
+                Option.action("Facturas de un estudiante", () -> {
+                    Student s = picker.student();
+                    financeView.showInvoices(service.invoicesOf(s.id()));
                 }),
+                Option.action("Listar todas las facturas emitidas", () -> financeView.showInvoices(service.listInvoices())),
+                Option.action("Generar de nuevo los archivos TXT y PDF de una factura", () -> {
+                    InvoiceDocument document = service.regenerateInvoiceFiles(readInvoiceNumber());
+                    view.success("Archivos de la factura " + document.invoice().number() + " generados de nuevo.");
+                    financeView.showInvoiceFiles(document);
+                })));
+    }
+
+    /**
+     * Issues one invoice with payments the user picks ("1,3" or "todos") among the student's payments
+     * that have no invoice yet, to the suggested guardian or another guardian of the student.
+     */
+    private void issueInvoice() {
+        Student student = picker.student();
+        List<Payment> pending = service.unbilledPayments(student.id());
+        if (pending.isEmpty()) {
+            view.info(student.fullName() + " no tiene pagos pendientes de facturar.");
+            return;
+        }
+        view.info("Pagos de " + student.fullName() + " que aún no tienen factura:");
+        financeView.showUnbilledPayments(pending);
+        List<Payment> chosen = view.readValidated("Números de los pagos a facturar (ej: 1,3) o 'todos'",
+                        text -> SelectionParser.parse(text, pending.size(), Invoice.MAX_LINES))
+                .stream().map(position -> pending.get(position - 1)).toList();
+        Guardian client = chooseClient(student, chosen);
+        if (!view.confirm("¿Emitir la factura de " + chosen.size() + " pago(s) por " + Formatter.money(service.total(chosen))
+                + " a nombre de " + client.fullName() + "?")) {
+            view.warning("No se emitió ninguna factura.");
+            return;
+        }
+        InvoiceDocument document = service.issueInvoice(student.id(), chosen.stream().map(Payment::id).toList(), client.id());
+        view.success("Factura " + document.invoice().number() + " emitida por " + Formatter.money(document.invoice().total())
+                + " a nombre de " + client.fullName() + ".");
+        financeView.printInvoice(document);
+    }
+
+    /** The suggested client (who paid, or the financially responsible guardian) unless the user picks another. */
+    private Guardian chooseClient(Student student, List<Payment> chosen) {
+        Guardian suggested = service.suggestedClient(student.id(), chosen);
+        if (view.confirm("Cliente sugerido: " + suggested.fullName() + " (" + suggested.documentType() + " "
+                + suggested.documentNumber() + "). ¿Facturar a su nombre?")) {
+            return suggested;
+        }
+        return view.chooseFrom("Acudiente a cuyo nombre se factura", studentService.guardiansOf(student.id()),
+                l -> l.guardian().fullName() + " (" + l.guardian().relationship() + ")").guardian();
+    }
+
+    private String readInvoiceNumber() {
+        return view.readValidated("Número de la factura (ej: 13 o FE-000013)", Invoice::normalizeNumber);
+    }
+
+    // ---------------------------------------------------------------- payment maintenance
+
+    private void paymentMaintenanceMenu() {
+        runMenu("CORREGIR O ANULAR PAGOS", List.of(
                 Option.action("Actualizar método o notas de un pago", () -> {
                     Payment payment = view.readValidated("ID del pago o número de recibo", service::findPayment);
                     PaymentMethod method = view.chooseEnum("Método de pago", PaymentMethod.values(), payment.method());
@@ -244,10 +296,16 @@ public class FinanceController extends BaseController {
                     service.updatePayment(payment.id(), method, notes);
                     view.success("Pago actualizado.");
                 }),
-                Option.action("Anular (eliminar) un pago", () -> {
+                Option.action("Anular (eliminar) un pago sin facturar", () -> {
                     Payment payment = view.readValidated("ID del pago o número de recibo", service::findPayment);
+                    Optional<Invoice> invoice = service.invoiceOf(payment.id());
+                    if (invoice.isPresent()) {
+                        view.error("El pago " + payment.receiptNumber() + " está incluido en la factura " + invoice.get().number()
+                                + ": una factura emitida no se modifica ni se elimina (se anularía con una nota crédito).");
+                        return;
+                    }
                     view.warning("Se eliminará el pago " + payment.receiptNumber() + " por " + Formatter.money(payment.amount())
-                            + " y su factura; el cobro asociado volverá a quedar pendiente.");
+                            + "; el cobro asociado volverá a quedar pendiente.");
                     if (view.confirm("¿Confirma la anulación?")) {
                         service.deletePayment(payment.id());
                         view.success("Pago anulado.");

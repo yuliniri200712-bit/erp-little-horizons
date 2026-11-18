@@ -1,6 +1,7 @@
 package com.littlehorizons.erp.service;
 
 import com.littlehorizons.erp.config.AppConfig;
+import com.littlehorizons.erp.config.BillingProfile;
 import com.littlehorizons.erp.dao.ChargeDao;
 import com.littlehorizons.erp.dao.EnrollmentDao;
 import com.littlehorizons.erp.dao.GuardianDao;
@@ -11,14 +12,20 @@ import com.littlehorizons.erp.dao.SequenceDao;
 import com.littlehorizons.erp.dao.StudentAdjustmentDao;
 import com.littlehorizons.erp.dao.StudentDao;
 import com.littlehorizons.erp.exception.BusinessException;
+import com.littlehorizons.erp.exception.DataAccessException;
 import com.littlehorizons.erp.model.Charge;
 import com.littlehorizons.erp.model.Enrollment;
 import com.littlehorizons.erp.model.Guardian;
 import com.littlehorizons.erp.model.Invoice;
+import com.littlehorizons.erp.model.InvoiceLine;
 import com.littlehorizons.erp.model.Payment;
 import com.littlehorizons.erp.model.PaymentConcept;
 import com.littlehorizons.erp.model.Student;
 import com.littlehorizons.erp.model.StudentAdjustment;
+import com.littlehorizons.erp.model.dto.BulkChargeResult;
+import com.littlehorizons.erp.model.dto.InvoiceDocument;
+import com.littlehorizons.erp.model.dto.PaymentRequest;
+import com.littlehorizons.erp.model.dto.PaymentResult;
 import com.littlehorizons.erp.model.enums.AdjustmentType;
 import com.littlehorizons.erp.model.enums.ChargeStatus;
 import com.littlehorizons.erp.model.enums.EnrollmentStatus;
@@ -27,6 +34,7 @@ import com.littlehorizons.erp.model.enums.StudentStatus;
 import com.littlehorizons.erp.model.report.DebtRow;
 import com.littlehorizons.erp.model.report.InvoiceData;
 import com.littlehorizons.erp.service.invoice.InvoiceGenerator;
+import com.littlehorizons.erp.service.invoice.InvoiceTextRenderer;
 import com.littlehorizons.erp.util.CufeGenerator;
 import com.littlehorizons.erp.util.ErrorLogger;
 import com.littlehorizons.erp.util.Formatter;
@@ -36,20 +44,31 @@ import com.littlehorizons.erp.util.Validator;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
- * Billing concepts, scholarships/discounts, receivables, payments, invoices and arrears.
- * Confirming a payment stores it, issues the invoice (consecutive + simulated CUFE) in the same
- * transaction and then renders the PDF through {@link InvoiceGenerator}.
+ * Billing concepts, scholarships/discounts, receivables, payments, electronic invoices and arrears.
+ * Confirming a payment stores it and then issues its invoice (consecutive, simulated CUFE and
+ * resolution); invoices can also group several payments. Invoices are saved through the
+ * {@link InvoiceGenerator} strategies (TXT and PDF).
  */
 public class FinanceService {
 
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
     private static final BigDecimal MAX_TAX_RATE = BigDecimal.valueOf(30);
+    private static final ZoneId COLOMBIA = ZoneId.of("America/Bogota");
 
     private final PaymentConceptDao conceptDao;
     private final StudentAdjustmentDao adjustmentDao;
@@ -60,12 +79,12 @@ public class FinanceService {
     private final StudentDao studentDao;
     private final GuardianDao guardianDao;
     private final EnrollmentDao enrollmentDao;
-    private final InvoiceGenerator invoiceGenerator;
+    private final List<InvoiceGenerator> invoiceGenerators;
     private final AppConfig config;
 
     public FinanceService(PaymentConceptDao conceptDao, StudentAdjustmentDao adjustmentDao, ChargeDao chargeDao,
                           PaymentDao paymentDao, InvoiceDao invoiceDao, SequenceDao sequenceDao, StudentDao studentDao,
-                          GuardianDao guardianDao, EnrollmentDao enrollmentDao, InvoiceGenerator invoiceGenerator,
+                          GuardianDao guardianDao, EnrollmentDao enrollmentDao, List<InvoiceGenerator> invoiceGenerators,
                           AppConfig config) {
         this.conceptDao = conceptDao;
         this.adjustmentDao = adjustmentDao;
@@ -76,7 +95,7 @@ public class FinanceService {
         this.studentDao = studentDao;
         this.guardianDao = guardianDao;
         this.enrollmentDao = enrollmentDao;
-        this.invoiceGenerator = invoiceGenerator;
+        this.invoiceGenerators = List.copyOf(invoiceGenerators);
         this.config = config;
     }
 
@@ -269,10 +288,11 @@ public class FinanceService {
     // ================================================================ payments
 
     /**
-     * Registers a payment and issues its invoice. Validations: amount &gt; 0, date not in the
-     * future, paying guardian linked to the student, charge (if any) pending, of the same student
-     * and with enough balance. The PDF is generated after the commit; if it fails the payment is
-     * kept and the invoice can be regenerated later.
+     * Registers a payment and then issues its electronic invoice to the guardian who paid. Validations:
+     * amount &gt; 0, date not in the future, paying guardian linked to the student, charge (if any)
+     * pending, of the same student and with enough balance. The payment is committed first: if the
+     * invoice cannot be issued (expired resolution, numbering range used up...) the payment is kept and
+     * can be invoiced later from the invoices menu.
      */
     public PaymentResult registerPayment(PaymentRequest request) {
         Student student = requireStudent(request.studentId());
@@ -301,24 +321,17 @@ public class FinanceService {
             int paymentId = paymentDao.insert(new Payment(null, student.id(), null, payer.id(), null, conceptId, null, chargeId,
                     amount, date, request.method(), receipt, date.getYear(), request.period(),
                     Validator.optionalText(request.notes(), "Notas", 1000)));
-            if (chargeId != null) {
-                Charge charge = getCharge(chargeId);
-                if (charge.pending().signum() == 0) {
-                    chargeDao.updateStatus(chargeId, ChargeStatus.PAID);
-                }
+            if (chargeId != null && getCharge(chargeId).pending().signum() == 0) {
+                chargeDao.updateStatus(chargeId, ChargeStatus.PAID);
             }
-            Payment payment = getPayment(paymentId);
-            issueInvoice(payment, concept);
-            return payment;
+            return getPayment(paymentId);
         });
 
-        Invoice invoice = invoiceDao.findByPayment(saved.id()).orElseThrow();
         try {
-            Path pdf = renderPdf(saved, invoice);
-            return new PaymentResult(saved, invoiceDao.findByPayment(saved.id()).orElse(invoice), pdf, null);
-        } catch (IOException | RuntimeException e) {
-            ErrorLogger.error("Invoice PDF " + invoice.number(), e);
-            return new PaymentResult(saved, invoice, null, e.getMessage());
+            return new PaymentResult(saved, issueInvoice(student.id(), List.of(saved.id()), payer.id()), null);
+        } catch (BusinessException | DataAccessException e) {
+            ErrorLogger.error("Invoice for payment " + saved.receiptNumber(), e);
+            return new PaymentResult(saved, null, e.getMessage());
         }
     }
 
@@ -345,42 +358,6 @@ public class FinanceService {
         if (amount.compareTo(charge.pending()) > 0) {
             throw new BusinessException("El monto supera el saldo pendiente del cobro (" + Formatter.money(charge.pending()) + ").");
         }
-    }
-
-    /** Creates the invoice record: next consecutive, totals with IVA if applicable and simulated CUFE. */
-    private Invoice issueInvoice(Payment payment, PaymentConcept concept) {
-        String number = sequenceDao.next(SequenceDao.INVOICE);
-        BigDecimal total = payment.amount().setScale(2, RoundingMode.HALF_UP);
-        BigDecimal subtotal = total.multiply(HUNDRED).divide(HUNDRED.add(concept.taxRate()), 2, RoundingMode.HALF_UP);
-        BigDecimal tax = total.subtract(subtotal);
-        LocalDate issueDate = LocalDate.now();
-        String cufe = CufeGenerator.simulatedCufe(number, config.companyNit(), issueDate, total);
-        Invoice invoice = new Invoice(null, number, payment.id(), issueDate, subtotal, tax, total, cufe, null, null);
-        int id = invoiceDao.insert(invoice);
-        return new Invoice(id, number, payment.id(), issueDate, subtotal, tax, total, cufe, null, null);
-    }
-
-    /** Generates (or regenerates) the PDF of a payment's invoice, issuing the invoice if missing. */
-    public Path generateInvoicePdf(int paymentId) throws IOException {
-        Payment payment = getPayment(paymentId);
-        Invoice invoice = invoiceDao.findByPayment(paymentId).orElseGet(() ->
-                TransactionManager.inTransaction(() -> issueInvoice(payment, getConcept(payment.conceptId()))));
-        return renderPdf(payment, invoice);
-    }
-
-    private Path renderPdf(Payment payment, Invoice invoice) throws IOException {
-        Student student = requireStudent(payment.studentId());
-        Guardian guardian = payment.guardianId() == null ? guardianDao.findFinancialGuardian(student.id()).orElse(null)
-                : guardianDao.findById(payment.guardianId()).orElse(null);
-        PaymentConcept concept = getConcept(payment.conceptId());
-        String gradeName = enrollmentDao.findByStudentAndYear(student.id(), payment.paymentDate().getYear())
-                .map(Enrollment::gradeName).orElse("-");
-        String line = concept.name() + (payment.chargeId() == null ? ""
-                : " - " + chargeDao.findById(payment.chargeId()).map(Charge::description).orElse(""))
-                + (payment.notes() == null ? "" : " (" + payment.notes() + ")");
-        Path file = invoiceGenerator.generate(new InvoiceData(invoice, payment, student, guardian, concept, gradeName, line));
-        invoiceDao.updateFile(invoice.id(), file.getFileName().toString(), file.toAbsolutePath().toString());
-        return file;
     }
 
     public Payment getPayment(int paymentId) {
@@ -423,9 +400,17 @@ public class FinanceService {
                 Validator.optionalText(notes, "Notas", 1000));
     }
 
-    /** Deletes (annuls) a payment; its invoice is removed by cascade and the charge reopens. */
+    /**
+     * Deletes (annuls) a payment that is not invoiced yet; the charge it covered reopens. An invoiced
+     * payment cannot be deleted: an issued electronic invoice is never modified (in real life it is
+     * cancelled with a credit note).
+     */
     public void deletePayment(int paymentId) {
         Payment payment = getPayment(paymentId);
+        invoiceDao.findByPayment(paymentId).ifPresent(invoice -> {
+            throw new BusinessException("El pago " + payment.receiptNumber() + " está incluido en la factura " + invoice.number()
+                    + ": una factura emitida no se modifica ni se elimina (se anularía con una nota crédito).");
+        });
         TransactionManager.inTransaction(() -> {
             paymentDao.delete(paymentId);
             if (payment.chargeId() != null) {
@@ -437,12 +422,186 @@ public class FinanceService {
         });
     }
 
+    // ================================================================ electronic invoices (simulated)
+
+    /** Payments of the student that are not in any invoice yet, oldest first. */
+    public List<Payment> unbilledPayments(int studentId) {
+        requireStudent(studentId);
+        return paymentDao.findUnbilledByStudent(studentId);
+    }
+
+    /**
+     * Who the invoice is issued to by default: the guardian who paid, when every chosen payment was paid
+     * by the same one; otherwise the financially responsible guardian (the primary one first).
+     */
+    public Guardian suggestedClient(int studentId, List<Payment> payments) {
+        Student student = requireStudent(studentId);
+        List<Integer> payers = payments.stream().map(Payment::guardianId).distinct().toList();
+        if (payers.size() == 1 && payers.getFirst() != null && guardianDao.isLinked(studentId, payers.getFirst())) {
+            return guardianDao.findById(payers.getFirst()).orElseThrow();
+        }
+        return guardianDao.findFinancialGuardian(studentId)
+                .orElseThrow(() -> new BusinessException(student.fullName() + " no tiene acudientes registrados."));
+    }
+
+    /**
+     * Issues ONE electronic invoice with the chosen payments of the student, to the chosen guardian, and
+     * saves it as TXT and PDF. Rules: 1 to {@value Invoice#MAX_LINES} payments, no repeated payment, only
+     * payments of this student that are not invoiced yet, client linked to the student and with an
+     * address, resolution in force and number inside its authorized range. The consecutive is locked
+     * (SELECT ... FOR UPDATE) so two invoices never get the same number nor the same payment.
+     */
+    public InvoiceDocument issueInvoice(int studentId, List<Integer> paymentIds, int clientId) {
+        Student student = requireStudent(studentId);
+        if (paymentIds == null || paymentIds.isEmpty()) {
+            throw new BusinessException("Elija al menos un pago para facturar.");
+        }
+        if (paymentIds.size() > Invoice.MAX_LINES) {
+            throw new BusinessException("Una factura admite máximo " + Invoice.MAX_LINES + " pagos.");
+        }
+        if (Set.copyOf(paymentIds).size() != paymentIds.size()) {
+            throw new BusinessException("Un pago no puede aparecer dos veces en la misma factura.");
+        }
+        BillingProfile profile = BillingProfile.from(config);
+        LocalDateTime now = LocalDateTime.now(COLOMBIA).truncatedTo(ChronoUnit.SECONDS);
+        profile.requireValidOn(now.toLocalDate());
+        Guardian client = requireBillableClient(student, clientId);
+
+        String issuedNumber = TransactionManager.inTransaction(() -> {
+            String number = sequenceDao.next(SequenceDao.INVOICE); // locks the counter until commit
+            profile.requireInRange(number);
+            Map<Integer, Payment> available = paymentDao.findUnbilledByStudent(studentId).stream()
+                    .collect(Collectors.toMap(Payment::id, Function.identity()));
+            List<InvoiceLine> lines = paymentIds.stream().map(id -> {
+                Payment payment = available.get(id);
+                if (payment == null) {
+                    String receipt = paymentDao.findById(id).map(Payment::receiptNumber).orElse("con ID " + id);
+                    throw new BusinessException("El pago " + receipt + " no es de " + student.fullName() + " o ya fue facturado.");
+                }
+                return lineOf(payment);
+            }).toList();
+            BigDecimal subtotal = sum(lines, InvoiceLine::subtotal);
+            BigDecimal tax = sum(lines, InvoiceLine::taxAmount);
+            BigDecimal total = subtotal.add(tax);
+            String cufe = CufeGenerator.simulatedCufe(number, now, subtotal, tax, total, profile.nitDigits(),
+                    client.documentNumber(), profile.technicalKey(), BillingProfile.ENVIRONMENT);
+            int id = invoiceDao.insert(new Invoice(null, number, studentId, null, clientId, null, now, subtotal, tax, total,
+                    cufe, profile.resolutionText(), null, null, lines.size()));
+            lines.forEach(line -> invoiceDao.insertLine(line.withInvoiceId(id)));
+            return number;
+        });
+        return saveFiles(requireInvoice(issuedNumber), true);
+    }
+
+    /** The invoice with that number ("13" or "FE-000013") and its text; the files are not touched. */
+    public InvoiceDocument viewInvoice(String number) {
+        Invoice invoice = requireInvoice(number);
+        InvoiceData data = invoiceData(invoice);
+        List<Path> files = invoiceGenerators.stream().map(g -> g.pathFor(invoice.number())).filter(Files::exists).toList();
+        return new InvoiceDocument(data, InvoiceTextRenderer.render(data), files, null);
+    }
+
+    /** Writes the TXT and PDF files of an existing invoice again, with the same content (built from saved data). */
+    public InvoiceDocument regenerateInvoiceFiles(String number) {
+        return saveFiles(requireInvoice(number), false);
+    }
+
+    public List<Invoice> invoicesOf(int studentId) {
+        requireStudent(studentId);
+        return invoiceDao.findByStudent(studentId);
+    }
+
     public List<Invoice> listInvoices() {
         return invoiceDao.findAll();
     }
 
     public Optional<Invoice> invoiceOf(int paymentId) {
         return invoiceDao.findByPayment(paymentId);
+    }
+
+    private Invoice requireInvoice(String number) {
+        String normalized = Invoice.normalizeNumber(number);
+        return invoiceDao.findByNumber(normalized)
+                .orElseThrow(() -> new BusinessException("No existe la factura " + normalized + "."));
+    }
+
+    private Guardian requireBillableClient(Student student, int clientId) {
+        Guardian client = guardianDao.findById(clientId)
+                .orElseThrow(() -> new BusinessException("No existe el acudiente " + clientId + "."));
+        if (!guardianDao.isLinked(student.id(), clientId)) {
+            throw new BusinessException(client.fullName() + " no es acudiente de " + student.fullName() + ".");
+        }
+        if (client.address() == null || client.address().isBlank()) {
+            throw new BusinessException(client.fullName() + " no tiene dirección registrada y la factura la exige. "
+                    + "Actualícela en Gestión de Estudiantes > Acudientes.");
+        }
+        return client;
+    }
+
+    /**
+     * Turns a payment into an invoice line. The amount paid already includes the VAT of its concept, so
+     * it is split: value without VAT = amount / (1 + VAT %), rounded to cents, and VAT = amount - value
+     * without VAT. The invoice total is therefore exactly what was paid.
+     */
+    private InvoiceLine lineOf(Payment payment) {
+        PaymentConcept concept = getConcept(payment.conceptId());
+        BigDecimal rate = concept.taxRate() == null ? BigDecimal.ZERO : concept.taxRate();
+        BigDecimal total = payment.amount().setScale(2, RoundingMode.HALF_UP);
+        BigDecimal unit = total.multiply(HUNDRED).divide(HUNDRED.add(rate), 2, RoundingMode.HALF_UP);
+        return new InvoiceLine(null, null, payment.id(), payment.receiptNumber(), describe(payment, concept), 1, unit,
+                rate.setScale(2, RoundingMode.HALF_UP), total.subtract(unit), total);
+    }
+
+    /** "Pensión septiembre 2026" (the charge it paid) or "Uniforme - período III 2026". */
+    private String describe(Payment payment, PaymentConcept concept) {
+        Optional<String> charge = Optional.ofNullable(payment.chargeId()).flatMap(chargeDao::findById).map(Charge::description);
+        if (charge.isPresent()) {
+            return charge.get();
+        }
+        String period = payment.period() == null ? "" : " - período " + payment.period();
+        return concept.name() + period + " " + (payment.academicYear() == null ? payment.paymentDate().getYear() : payment.academicYear());
+    }
+
+    private static BigDecimal sum(List<InvoiceLine> lines, Function<InvoiceLine, BigDecimal> value) {
+        return lines.stream().map(value).reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /** Everything the renderers need, read again from the database. */
+    private InvoiceData invoiceData(Invoice invoice) {
+        List<InvoiceLine> lines = invoiceDao.linesOf(invoice.id());
+        List<Payment> payments = lines.stream().map(line -> getPayment(line.paymentId())).toList();
+        Student student = requireStudent(invoice.studentId());
+        Guardian client = guardianDao.findById(invoice.guardianId())
+                .orElseThrow(() -> new BusinessException("No existe el acudiente " + invoice.guardianId() + "."));
+        String gradeName = enrollmentDao.findByStudentAndYear(student.id(), invoice.issuedAt().getYear())
+                .map(Enrollment::gradeName).orElse("-");
+        return new InvoiceData(invoice, lines, payments, student, client, gradeName, BillingProfile.from(config));
+    }
+
+    /**
+     * Writes the invoice files with every generator (TXT and PDF). When the invoice was just issued a
+     * failure to write is not an error of the operation: the invoice exists and the files can be
+     * generated again later.
+     */
+    private InvoiceDocument saveFiles(Invoice invoice, boolean justIssued) {
+        InvoiceData data = invoiceData(invoice);
+        List<String> text = InvoiceTextRenderer.render(data);
+        List<Path> files = new ArrayList<>();
+        try {
+            for (InvoiceGenerator generator : invoiceGenerators) {
+                files.add(generator.generate(data));
+            }
+            Path main = files.getLast(); // the last generator is the PDF (the format required by the specification)
+            invoiceDao.updateFile(invoice.id(), main.getFileName().toString(), main.toAbsolutePath().toString());
+            return new InvoiceDocument(data, text, files, null);
+        } catch (IOException | RuntimeException e) {
+            ErrorLogger.error("Invoice files " + invoice.number(), e);
+            if (!justIssued) {
+                throw new BusinessException("No se pudieron generar los archivos de la factura " + invoice.number() + ": "
+                        + e.getMessage());
+            }
+            return new InvoiceDocument(data, text, files, e.getMessage());
+        }
     }
 
     // ================================================================ arrears

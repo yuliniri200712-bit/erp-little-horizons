@@ -1,7 +1,8 @@
 package com.littlehorizons.erp;
 
 import com.littlehorizons.erp.config.AppConfig;
-import com.littlehorizons.erp.dao.AcademicRecordDao;
+import com.littlehorizons.erp.config.BillingProfile;
+import com.littlehorizons.erp.dao.jdbc.JdbcAcademicRecordDao;
 import com.littlehorizons.erp.exception.BusinessException;
 import com.littlehorizons.erp.exception.DataAccessException;
 import com.littlehorizons.erp.model.AcademicRecord;
@@ -10,6 +11,7 @@ import com.littlehorizons.erp.model.ClassSchedule;
 import com.littlehorizons.erp.model.GuardianLink;
 import com.littlehorizons.erp.model.Invoice;
 import com.littlehorizons.erp.model.Loan;
+import com.littlehorizons.erp.model.Payment;
 import com.littlehorizons.erp.model.enums.AcademicPeriod;
 import com.littlehorizons.erp.model.enums.BorrowerType;
 import com.littlehorizons.erp.model.enums.ChargeStatus;
@@ -18,8 +20,10 @@ import com.littlehorizons.erp.model.enums.PaymentMethod;
 import com.littlehorizons.erp.model.enums.PaymentPeriod;
 import com.littlehorizons.erp.model.enums.Placement;
 import com.littlehorizons.erp.model.enums.ResourceStatus;
-import com.littlehorizons.erp.service.PaymentRequest;
-import com.littlehorizons.erp.service.PaymentResult;
+import com.littlehorizons.erp.model.dto.InvoiceDocument;
+import com.littlehorizons.erp.model.dto.PaymentRequest;
+import com.littlehorizons.erp.model.dto.PaymentResult;
+import com.littlehorizons.erp.util.SelectionParser;
 import com.littlehorizons.erp.util.TransactionManager;
 
 import java.math.BigDecimal;
@@ -32,7 +36,7 @@ import java.util.stream.IntStream;
 /**
  * Integration smoke tests of the main business rules against the MySQL database loaded with
  * docs/database.sql. Everything runs inside ONE transaction that is rolled back at the end,
- * so the database is left unchanged (only the generated test PDF remains in facturas/).
+ * so the database is left unchanged (only the generated test invoice files remain in facturas/).
  *
  * <p>Run: {@code mvn -q test-compile} and then
  * {@code java -cp "target/erp-little-horizons-1.0.0.jar;target/test-classes" com.littlehorizons.erp.SmokeTest}</p>
@@ -61,6 +65,7 @@ public final class SmokeTest {
                 studentRules(s);
                 eventRules(s);
                 attendanceReport(s);
+                reportExport(s);
                 throw new Rollback();
             });
         } catch (Rollback expected) {
@@ -89,7 +94,7 @@ public final class SmokeTest {
         check("nota válida actualizada", s.academic().findGrade(1, 1, 2026, AcademicPeriod.IV)
                 .map(r -> r.score().compareTo(new BigDecimal("4.8")) == 0).orElse(false) && saved.id() != null);
         try {
-            new AcademicRecordDao().insert(new AcademicRecord(null, 2, 1, null, 1, null, 2026, AcademicPeriod.FINAL,
+            new JdbcAcademicRecordDao().insert(new AcademicRecord(null, 2, 1, null, 1, null, 2026, AcademicPeriod.FINAL,
                     new BigDecimal("6.0"), null, LocalDate.now()));
             fail("CHECK de BD debía rechazar nota 6.0");
         } catch (DataAccessException e) {
@@ -124,7 +129,9 @@ public final class SmokeTest {
         expectError("estudiante con préstamo vencido no puede pedir otro", () ->
                 s.resources().lend(BorrowerType.STUDENT, 14, 2, LocalDate.now(), LocalDate.now().plusDays(7), null));
         List<Loan> overdue = s.resources().overdueLoans();
-        check("reporte de vencidos (5 préstamos)", overdue.size() == 5);
+        check("reporte de vencidos (" + overdue.size() + " préstamos, todos con fecha prevista pasada)",
+                overdue.size() >= 5 && overdue.stream().allMatch(l -> l.status() == com.littlehorizons.erp.model.enums.LoanStatus.OVERDUE
+                        && l.expectedReturnDate().isBefore(LocalDate.now())));
         int teacherLoan = s.resources().lend(BorrowerType.TEACHER, 1, 2, LocalDate.now(), LocalDate.now().plusDays(10), null);
         check("préstamo a profesor en tabla prestamos_profesor",
                 s.resources().loansOf(BorrowerType.TEACHER, 1).stream().anyMatch(l -> l.id() == teacherLoan));
@@ -144,13 +151,24 @@ public final class SmokeTest {
                 september.conceptId(), september.id(), september.pending(), LocalDate.now(), PaymentMethod.CASH, null, null)));
         PaymentResult result = s.finance().registerPayment(new PaymentRequest(8, null, september.conceptId(), september.id(),
                 september.pending(), LocalDate.now(), PaymentMethod.TRANSFER, PaymentPeriod.III, "Prueba automatizada"));
-        Invoice invoice = result.invoice();
         check("recibo consecutivo generado (" + result.payment().receiptNumber() + ")", result.payment().receiptNumber().startsWith("RC-"));
+        check("el pago emite su factura automáticamente", result.invoice() != null && result.invoiceError() == null);
+        Invoice invoice = result.invoice().invoice();
         check("factura consecutiva " + invoice.number(), invoice.number().matches("FE-\\d{6}"));
         check("CUFE simulado SHA-384 (96 hex)", invoice.cufe().matches("[0-9a-f]{96}"));
-        check("subtotal + IVA = total", invoice.subtotal().add(invoice.tax()).compareTo(invoice.total()) == 0);
-        check("PDF generado " + result.pdfPath(), result.pdfPath() != null && Files.exists(result.pdfPath())
-                && result.pdfPath().getFileName().toString().matches("factura_\\d{6}\\.pdf"));
+        check("subtotal + IVA = total = monto pagado", invoice.subtotal().add(invoice.tax()).compareTo(invoice.total()) == 0
+                && invoice.total().compareTo(result.payment().amount()) == 0);
+        check("factura a nombre del acudiente que pagó", invoice.guardianId() == result.payment().guardianId());
+        check("archivos TXT y PDF generados " + result.invoice().files().stream().map(f -> f.getFileName().toString()).toList(),
+                result.invoice().files().size() == 2 && result.invoice().files().stream().allMatch(f -> Files.exists(f)
+                        && f.getFileName().toString().matches("factura_\\d{6}\\.(txt|pdf)")));
+        check("texto de la factura con CUFE, resolución y QR", result.invoice().text().contains("  " + invoice.cufe().substring(0, 48))
+                && result.invoice().text().stream().anyMatch(l -> l.contains("Resolución DIAN"))
+                && result.invoice().text().stream().anyMatch(l -> l.contains("█")));
+        expectError("pago ya facturado no se factura de nuevo", () ->
+                s.finance().issueInvoice(8, List.of(result.payment().id()), invoice.guardianId()));
+        expectError("no se anula un pago ya facturado", () -> s.finance().deletePayment(result.payment().id()));
+        multiPaymentInvoice(s);
         check("cobro pasa a Pagado", s.finance().getCharge(september.id()).status() == ChargeStatus.PAID);
         check("deuda sale del reporte de mora", s.finance().debtsOverOneMonth().size() == debtsBefore - 1);
         check("historial por acudiente incluye el pago", s.finance().paymentsOfGuardian(result.payment().guardianId()).stream()
@@ -158,6 +176,39 @@ public final class SmokeTest {
         BigDecimal uniform = s.finance().effectiveAmount(1, 3);
         check("IVA 19% en uniforme (250.000 -> 297.500)", uniform.compareTo(new BigDecimal("297500")) == 0);
         check("beca 50% en pensión (350.000 -> 175.000)", s.finance().effectiveAmount(4, 2).compareTo(new BigDecimal("175000")) == 0);
+    }
+
+    /** Invoice with several payments (one with 19 % VAT), picked like in the menu, and the resolution rules. */
+    private static void multiPaymentInvoice(AppServices s) {
+        List<Payment> pending = s.finance().unbilledPayments(2);
+        List<Payment> chosen = SelectionParser.parse("1,2", pending.size(), Invoice.MAX_LINES).stream()
+                .map(n -> pending.get(n - 1)).toList();
+        try {
+            SelectionParser.parse("1,99", pending.size(), Invoice.MAX_LINES);
+            fail("selección con número fuera de la lista debía rechazarse");
+        } catch (IllegalArgumentException e) {
+            pass("selección con número fuera de la lista -> " + e.getMessage());
+        }
+        expectError("factura a acudiente no vinculado", () -> s.finance().issueInvoice(2, chosen.stream().map(Payment::id).toList(), 1));
+        expectError("factura con un pago repetido", () -> s.finance().issueInvoice(2, List.of(chosen.getFirst().id(),
+                chosen.getFirst().id()), s.finance().suggestedClient(2, chosen).id()));
+        int client = s.finance().suggestedClient(2, chosen).id();
+        InvoiceDocument document = s.finance().issueInvoice(2, chosen.stream().map(Payment::id).toList(), client);
+        Invoice invoice = document.invoice();
+        BigDecimal paid = s.finance().total(chosen);
+        check("factura con " + invoice.lineCount() + " pagos por el total pagado", invoice.lineCount() == 2
+                && invoice.total().compareTo(paid) == 0 && document.data().lines().size() == 2);
+        check("IVA 19% separado del uniforme (297.500 = 250.000 + 47.500)", document.data().lines().stream()
+                .anyMatch(l -> l.taxAmount().compareTo(new BigDecimal("47500.00")) == 0
+                        && l.unitValue().compareTo(new BigDecimal("250000.00")) == 0));
+        check("pagos facturados salen de la lista sin facturar", s.finance().unbilledPayments(2).size() == pending.size() - 2);
+        check("ver factura acepta '" + Integer.parseInt(invoice.number().substring(3)) + "'",
+                s.finance().viewInvoice(String.valueOf(Integer.parseInt(invoice.number().substring(3)))).invoice().id().equals(invoice.id()));
+        check("facturas del estudiante", s.finance().invoicesOf(2).stream().anyMatch(i -> i.id().equals(invoice.id())));
+        expectError("número de factura inválido", () -> Invoice.normalizeNumber("FX-12"));
+        BillingProfile profile = BillingProfile.from(AppConfig.getInstance());
+        expectError("resolución vencida no permite facturar", () -> profile.requireValidOn(profile.validUntil().plusDays(1)));
+        expectError("número fuera del rango autorizado", () -> profile.requireInRange(Invoice.numberOf(profile.rangeTo() + 1)));
     }
 
     private static void scheduleConflict(AppServices s) {
@@ -207,6 +258,18 @@ public final class SmokeTest {
                 s.attendance().weeklyAbsenceAlerts(from, to).stream().noneMatch(a -> a.studentId() == 29));
         expectError("asistencia con fecha futura", () -> s.attendance().record(1, 1, LocalDate.now().plusDays(1),
                 com.littlehorizons.erp.model.enums.AttendanceStatus.PRESENT, null, null));
+    }
+
+    private static void reportExport(AppServices s) {
+        var files = s.exports().exportAll();
+        check("exportación de 5 reportes CSV", files.size() == 5 && files.stream().allMatch(f -> Files.exists(f.path())));
+        try {
+            List<String> lines = Files.readAllLines(files.getFirst().path());
+            check("CSV de mora con encabezado y datos (" + (lines.size() - 1) + " filas)",
+                    lines.getFirst().contains("Estudiante;Grado") && lines.size() > 1);
+        } catch (java.io.IOException e) {
+            fail("lectura del CSV exportado: " + e.getMessage());
+        }
     }
 
     // ---------------------------------------------------------------- helpers

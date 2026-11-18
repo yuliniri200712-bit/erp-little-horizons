@@ -6,15 +6,18 @@ import com.littlehorizons.erp.model.Payment;
 import com.littlehorizons.erp.model.PaymentConcept;
 import com.littlehorizons.erp.model.StudentAdjustment;
 import com.littlehorizons.erp.model.report.DebtRow;
-import com.littlehorizons.erp.service.PaymentResult;
+import com.littlehorizons.erp.model.dto.InvoiceDocument;
+import com.littlehorizons.erp.model.dto.PaymentResult;
 import com.littlehorizons.erp.util.Formatter;
 
 import java.math.BigDecimal;
+import java.nio.file.Path;
 import java.util.List;
+import java.util.stream.IntStream;
 
 import static com.littlehorizons.erp.view.ConsoleView.row;
 
-/** Forms and listings of concepts, adjustments, charges, payments, invoices and arrears. */
+/** Forms and listings of concepts, adjustments, charges, payments, electronic invoices and arrears. */
 public class FinanceView {
 
     private final ConsoleView console;
@@ -64,26 +67,59 @@ public class FinanceView {
 
     public void showPaymentResult(PaymentResult result) {
         Payment p = result.payment();
-        Invoice i = result.invoice();
         console.success("Pago registrado. Recibo " + p.receiptNumber() + " por " + Formatter.money(p.amount()) + " (" + p.method() + ").");
-        console.field("Factura", i.number());
-        console.field("Subtotal", Formatter.money(i.subtotal()));
-        console.field("IVA", Formatter.money(i.tax()));
-        console.field("Total", Formatter.money(i.total()));
+        InvoiceDocument document = result.invoice();
+        if (document == null) {
+            console.error("El pago quedó registrado, pero no se pudo emitir la factura: " + result.invoiceError()
+                    + " Puede emitirla después en 'Facturas electrónicas'.");
+            return;
+        }
+        Invoice i = document.invoice();
+        console.success("Factura " + i.number() + " emitida a nombre de " + i.guardianName() + ".");
+        console.field("Subtotal (sin IVA)", Formatter.moneyWithCents(i.subtotal()));
+        console.field("IVA", Formatter.moneyWithCents(i.tax()));
+        console.field("Total", Formatter.moneyWithCents(i.total()));
         console.field("CUFE (simulado)", i.cufe());
-        if (result.pdfPath() != null) {
-            console.success("Factura PDF generada en: " + result.pdfPath().toAbsolutePath());
-        } else {
-            console.warning("El pago quedó registrado pero el PDF no se pudo generar: " + result.pdfError()
-                    + ". Puede regenerarlo desde 'Facturas'.");
+        showInvoiceFiles(document);
+        console.info("Para verla completa: Facturas electrónicas > Ver una factura por su número.");
+    }
+
+    /** Prints the whole invoice, exactly as it is saved in the TXT file. */
+    public void printInvoice(InvoiceDocument document) {
+        console.info("");
+        document.text().forEach(console::info);
+        showInvoiceFiles(document);
+    }
+
+    public void showInvoiceFiles(InvoiceDocument document) {
+        document.files().forEach(file -> console.success("Archivo " + extension(file) + ": " + file.toAbsolutePath()));
+        if (document.fileError() != null) {
+            console.warning("La factura quedó registrada, pero no se pudieron guardar sus archivos (" + document.fileError()
+                    + "). Genérelos de nuevo desde 'Facturas electrónicas'.");
+        } else if (document.files().isEmpty()) {
+            console.warning("La factura no tiene archivos guardados: genérelos desde 'Facturas electrónicas'.");
         }
         console.warning("La factura es una SIMULACIÓN ACADÉMICA: no está validada ni autorizada por la DIAN.");
     }
 
+    public void showUnbilledPayments(List<Payment> payments) {
+        console.table(List.of("N°", "Recibo", "Fecha", "Concepto", "Monto", "Método", "Pagó"),
+                IntStream.range(0, payments.size()).mapToObj(n -> {
+                    Payment p = payments.get(n);
+                    return row(n + 1, p.receiptNumber(), Formatter.date(p.paymentDate()), p.conceptName(),
+                            Formatter.money(p.amount()), p.method(), p.guardianName());
+                }).toList());
+    }
+
     public void showInvoices(List<Invoice> invoices) {
-        console.table(List.of("ID", "Número", "ID pago", "Emisión", "Subtotal", "IVA", "Total", "Archivo PDF"),
-                invoices.stream().map(i -> row(i.id(), i.number(), i.paymentId(), Formatter.date(i.issueDate()), Formatter.money(i.subtotal()),
-                        Formatter.money(i.tax()), Formatter.money(i.total()), i.fileName() == null ? "(no generado)" : i.fileName())).toList());
+        console.table(List.of("Número", "Emisión", "Estudiante", "Cliente (acudiente)", "Pagos", "Subtotal", "IVA", "Total"),
+                invoices.stream().map(i -> row(i.number(), Formatter.dateTime(i.issuedAt()), i.studentName(), i.guardianName(),
+                        i.lineCount(), Formatter.money(i.subtotal()), Formatter.money(i.tax()), Formatter.money(i.total()))).toList());
+    }
+
+    private static String extension(Path file) {
+        String name = file.getFileName().toString();
+        return name.substring(name.lastIndexOf('.') + 1).toUpperCase();
     }
 
     public void showDebts(List<DebtRow> debts, BigDecimal totalPending) {

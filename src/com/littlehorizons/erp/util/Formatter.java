@@ -5,6 +5,7 @@ import java.math.RoundingMode;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Locale;
@@ -30,8 +31,23 @@ public final class Formatter {
         return "$ " + format.format(amount.setScale(0, RoundingMode.HALF_UP));
     }
 
+    /** Money with cents, as printed on invoices: $ 297.500,00. */
+    public static String moneyWithCents(BigDecimal amount) {
+        if (amount == null) {
+            return "-";
+        }
+        DecimalFormatSymbols symbols = DecimalFormatSymbols.getInstance(COLOMBIA);
+        symbols.setGroupingSeparator('.');
+        symbols.setDecimalSeparator(',');
+        return "$ " + new DecimalFormat("#,##0.00", symbols).format(amount.setScale(2, RoundingMode.HALF_UP));
+    }
+
     public static String date(LocalDate date) {
         return date == null ? "-" : date.format(DATE);
+    }
+
+    public static String dateTime(LocalDateTime value) {
+        return value == null ? "-" : value.format(DATE) + " " + value.format(TIME);
     }
 
     public static String time(LocalTime time) {

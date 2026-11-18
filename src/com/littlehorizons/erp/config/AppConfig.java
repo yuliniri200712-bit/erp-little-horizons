@@ -107,12 +107,12 @@ public final class AppConfig {
         return get("company.email", "");
     }
 
-    public String invoiceResolution() {
-        return get("invoice.resolution", "Resolución de habilitación SIMULADA");
-    }
-
     public Path invoiceOutputDir() {
         return Path.of(get("invoice.output.dir", "facturas"));
+    }
+
+    public Path reportsOutputDir() {
+        return Path.of(get("reports.output.dir", "reportes"));
     }
 
     public Path logFile() {
