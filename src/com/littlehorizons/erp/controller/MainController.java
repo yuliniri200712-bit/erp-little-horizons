@@ -1,5 +1,6 @@
 package com.littlehorizons.erp.controller;
 
+import com.littlehorizons.erp.exception.MainMenuRequestedException;
 import com.littlehorizons.erp.view.ConsoleView;
 
 import java.util.List;
@@ -7,7 +8,8 @@ import java.util.List;
 /** Main menu of the ERP; delegates each module to its controller. */
 public class MainController {
 
-    private static final String TITLE = "ERP Colegio Little Horizons — Sistema de Gestión Educativa";
+    private static final String TITLE = "ERP Colegio Little Horizons";
+    private static final String SUBTITLE = "Sistema de Gestión Educativa";
     private static final List<String> OPTIONS = List.of(
             "Gestión de Estudiantes",
             "Gestión Académica",
@@ -32,16 +34,26 @@ public class MainController {
 
     public void start() {
         while (true) {
-            view.header(TITLE);
+            view.banner(TITLE, SUBTITLE);
             for (int i = 0; i < OPTIONS.size(); i++) {
                 view.info((i + 1) + ". " + OPTIONS.get(i));
             }
-            int choice = view.readInt("Seleccione una opción", 1, OPTIONS.size());
+            view.info("");
+            int choice;
+            try {
+                choice = view.readInt("Seleccione una opción", 1, OPTIONS.size());
+            } catch (MainMenuRequestedException alreadyHome) {
+                continue;
+            }
             if (choice == OPTIONS.size()) {
                 view.info("Gracias por usar el ERP Little Horizons. ¡Hasta pronto!");
                 return;
             }
-            modules.get(choice - 1).start();
+            try {
+                modules.get(choice - 1).start();
+            } catch (MainMenuRequestedException home) {
+                view.info(home.getMessage());
+            }
         }
     }
 }

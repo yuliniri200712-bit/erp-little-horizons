@@ -1,6 +1,7 @@
 package com.littlehorizons.erp.view;
 
 import com.littlehorizons.erp.exception.BusinessException;
+import com.littlehorizons.erp.exception.MainMenuRequestedException;
 import com.littlehorizons.erp.model.enums.DbEnum;
 import com.littlehorizons.erp.util.Formatter;
 
@@ -25,6 +26,8 @@ import java.util.stream.IntStream;
  */
 public class ConsoleView {
 
+    /** Typed at any prompt, returns straight to the main menu. */
+    public static final String HOME_KEYWORD = "inicio";
     private static final int MAX_COLUMN_WIDTH = 42;
     private static final int LINE_WIDTH = 78;
     private static final List<DateTimeFormatter> DATE_FORMATS = List.of(
@@ -47,7 +50,8 @@ public class ConsoleView {
         String forced = System.getProperty("lh.console.encoding");
         String encoding = forced != null ? forced
                 : System.console() != null ? System.getProperty("stdin.encoding")
-                : System.getProperty("stdout.encoding", System.getProperty("stdin.encoding"));
+                : System.getProperty("sun.stdout.encoding",
+                System.getProperty("stdout.encoding", System.getProperty("stdin.encoding")));
         try {
             return encoding == null ? Charset.defaultCharset() : Charset.forName(encoding);
         } catch (IllegalArgumentException e) {
@@ -138,14 +142,33 @@ public class ConsoleView {
             out.printf("  %2d. %s%n", i + 1, options.get(i));
         }
         out.printf("  %2d. %s%n", 0, exitLabel);
+        out.println("  (Escriba '" + HOME_KEYWORD + "' en cualquier momento para ir al menú principal)");
         return readInt("Seleccione una opción", 0, options.size());
+    }
+
+    /** Boxed banner used by the main menu (same style as the specification's example). */
+    public void banner(String title, String subtitle) {
+        int width = Math.max(title.length(), subtitle.length()) + 6;
+        out.println();
+        out.println("╔" + "═".repeat(width) + "╗");
+        out.println("║" + padRight("   " + title, width) + "║");
+        out.println("║" + padRight("   " + subtitle, width) + "║");
+        out.println("╚" + "═".repeat(width) + "╝");
+        out.println();
+    }
+
+    private static String padRight(String text, int width) {
+        return text.length() >= width ? text : text + " ".repeat(width - text.length());
     }
 
     // ================================================================ input
 
     private String nextLine() {
-        String line = scanner.nextLine(); // NoSuchElementException when input ends (handled in Main)
-        return line.strip();
+        String line = scanner.nextLine().strip(); // NoSuchElementException when input ends (handled in Main)
+        if (HOME_KEYWORD.equalsIgnoreCase(line)) {
+            throw new MainMenuRequestedException();
+        }
+        return line;
     }
 
     public String readLine(String prompt) {

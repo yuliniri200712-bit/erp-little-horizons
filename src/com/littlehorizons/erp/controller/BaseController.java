@@ -2,6 +2,7 @@ package com.littlehorizons.erp.controller;
 
 import com.littlehorizons.erp.exception.BusinessException;
 import com.littlehorizons.erp.exception.DataAccessException;
+import com.littlehorizons.erp.exception.MainMenuRequestedException;
 import com.littlehorizons.erp.exception.OperationCancelledException;
 import com.littlehorizons.erp.util.ErrorLogger;
 import com.littlehorizons.erp.view.ConsoleView;
@@ -60,8 +61,8 @@ public abstract class BaseController {
         } catch (DataAccessException e) {
             ErrorLogger.error(getClass().getSimpleName() + " - " + context, e);
             view.error(e.getUserMessage());
-        } catch (NoSuchElementException e) {
-            throw e; // end of input: handled by Main
+        } catch (NoSuchElementException | MainMenuRequestedException e) {
+            throw e; // end of input (handled by Main) or "inicio" (handled by MainController)
         } catch (RuntimeException e) {
             ErrorLogger.error(getClass().getSimpleName() + " - " + context, e);
             view.error("Error inesperado (" + e.getClass().getSimpleName() + "). El detalle quedó en error_log.txt.");
