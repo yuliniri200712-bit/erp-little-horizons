@@ -1,4 +1,4 @@
-package com.littlehorizons.erp.dao;
+package com.littlehorizons.erp.dao.jdbc;
 
 import com.littlehorizons.erp.exception.DataAccessException;
 import com.littlehorizons.erp.model.enums.DbEnum;

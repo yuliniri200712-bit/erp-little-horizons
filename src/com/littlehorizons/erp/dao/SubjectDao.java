@@ -6,55 +6,21 @@ import java.util.List;
 import java.util.Optional;
 
 /** CRUD for subjects (materias). */
-public class SubjectDao extends BaseDao implements CrudDao<Subject> {
+public interface SubjectDao extends CrudDao<Subject> {
 
-    private static final String SELECT = "SELECT m.*, g.nombre_grado FROM materias m JOIN grados g ON g.id_grado = m.id_grado ";
-    private static final String ORDER = " ORDER BY g.nivel_numerico, m.codigo_materia";
+    Optional<Subject> findById(int id);
 
-    private static final RowMapper<Subject> MAPPER = rs -> new Subject(
-            rs.getInt("id_materia"), rs.getString("codigo_materia"), rs.getString("nombre_materia"),
-            rs.getString("descripcion"), rs.getInt("id_grado"), rs.getString("nombre_grado"),
-            rs.getInt("horas_semanales"), rs.getBoolean("esta_activa"));
+    Optional<Subject> findByCode(String code);
 
-    @Override
-    public Optional<Subject> findById(int id) {
-        return queryOne(SELECT + "WHERE m.id_materia = ?", MAPPER, id);
-    }
+    List<Subject> findAll();
 
-    public Optional<Subject> findByCode(String code) {
-        return queryOne(SELECT + "WHERE m.codigo_materia = ?", MAPPER, code);
-    }
+    List<Subject> findByGrade(int gradeId, boolean activeOnly);
 
-    @Override
-    public List<Subject> findAll() {
-        return query(SELECT + ORDER, MAPPER);
-    }
+    int insert(Subject s);
 
-    public List<Subject> findByGrade(int gradeId, boolean activeOnly) {
-        return query(SELECT + "WHERE m.id_grado = ? AND (? = FALSE OR m.esta_activa = TRUE)" + ORDER, MAPPER, gradeId, activeOnly);
-    }
+    boolean update(Subject s);
 
-    @Override
-    public int insert(Subject s) {
-        return insert("INSERT INTO materias (codigo_materia, nombre_materia, descripcion, id_grado, horas_semanales, esta_activa) "
-                + "VALUES (?, ?, ?, ?, ?, ?)", s.code(), s.name(), s.description(), s.gradeId(), s.weeklyHours(), s.active());
-    }
+    boolean delete(int id);
 
-    @Override
-    public boolean update(Subject s) {
-        return update("UPDATE materias SET codigo_materia = ?, nombre_materia = ?, descripcion = ?, id_grado = ?, "
-                        + "horas_semanales = ?, esta_activa = ? WHERE id_materia = ?",
-                s.code(), s.name(), s.description(), s.gradeId(), s.weeklyHours(), s.active(), s.id()) > 0;
-    }
-
-    @Override
-    public boolean delete(int id) {
-        return update("DELETE FROM materias WHERE id_materia = ?", id) > 0;
-    }
-
-    public long countDependencies(int subjectId) {
-        return count("SELECT (SELECT COUNT(*) FROM registros_academicos WHERE id_materia = ?) "
-                + "+ (SELECT COUNT(*) FROM inscripciones_materia WHERE id_materia = ?) "
-                + "+ (SELECT COUNT(*) FROM asistencias WHERE id_materia = ?)", subjectId, subjectId, subjectId);
-    }
+    long countDependencies(int subjectId);
 }

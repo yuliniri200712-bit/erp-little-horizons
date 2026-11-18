@@ -8,48 +8,21 @@ import java.util.List;
 import java.util.Optional;
 
 /** Yearly enrollments (matriculas). */
-public class EnrollmentDao extends BaseDao {
+public interface EnrollmentDao {
 
-    private static final String SELECT = "SELECT m.*, g.nombre_grado, g.nivel_numerico FROM matriculas m "
-            + "JOIN grados g ON g.id_grado = m.id_grado ";
+    int insert(Enrollment e);
 
-    private static final RowMapper<Enrollment> MAPPER = rs -> new Enrollment(
-            rs.getInt("id_matricula"), rs.getInt("id_estudiante"), rs.getInt("id_grado"), rs.getString("nombre_grado"),
-            rs.getInt("nivel_numerico"), rs.getInt("año_academico"), enumValue(rs, "estado_matricula", EnrollmentStatus.class),
-            localDate(rs, "fecha_matricula"), localDate(rs, "fecha_retiro"), rs.getString("observaciones"));
+    Optional<Enrollment> findById(int id);
 
-    public int insert(Enrollment e) {
-        return insert("INSERT INTO matriculas (id_estudiante, id_grado, año_academico, estado_matricula, fecha_matricula, observaciones) "
-                + "VALUES (?, ?, ?, ?, ?, ?)", e.studentId(), e.gradeId(), e.academicYear(), e.status(), e.enrollmentDate(), e.notes());
-    }
+    List<Enrollment> findByStudent(int studentId);
 
-    public Optional<Enrollment> findById(int id) {
-        return queryOne(SELECT + "WHERE m.id_matricula = ?", MAPPER, id);
-    }
+    Optional<Enrollment> findByStudentAndYear(int studentId, int year);
 
-    public List<Enrollment> findByStudent(int studentId) {
-        return query(SELECT + "WHERE m.id_estudiante = ? ORDER BY m.año_academico DESC", MAPPER, studentId);
-    }
+    Optional<Enrollment> findLatest(int studentId);
 
-    public Optional<Enrollment> findByStudentAndYear(int studentId, int year) {
-        return queryOne(SELECT + "WHERE m.id_estudiante = ? AND m.año_academico = ?", MAPPER, studentId, year);
-    }
+    List<Enrollment> findByYear(int year, Integer gradeId);
 
-    public Optional<Enrollment> findLatest(int studentId) {
-        return queryOne(SELECT + "WHERE m.id_estudiante = ? ORDER BY m.año_academico DESC LIMIT 1", MAPPER, studentId);
-    }
+    boolean updateStatus(int enrollmentId, EnrollmentStatus status, LocalDate withdrawalDate, String notes);
 
-    public List<Enrollment> findByYear(int year, Integer gradeId) {
-        return query(SELECT + "WHERE m.año_academico = ? AND (? IS NULL OR m.id_grado = ?) ORDER BY g.nivel_numerico, m.id_estudiante",
-                MAPPER, year, gradeId, gradeId);
-    }
-
-    public boolean updateStatus(int enrollmentId, EnrollmentStatus status, LocalDate withdrawalDate, String notes) {
-        return update("UPDATE matriculas SET estado_matricula = ?, fecha_retiro = ?, observaciones = COALESCE(?, observaciones) "
-                + "WHERE id_matricula = ?", status, withdrawalDate, notes, enrollmentId) > 0;
-    }
-
-    public boolean delete(int id) {
-        return update("DELETE FROM matriculas WHERE id_matricula = ?", id) > 0;
-    }
+    boolean delete(int id);
 }

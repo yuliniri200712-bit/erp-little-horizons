@@ -1,37 +1,28 @@
 package com.littlehorizons.erp.dao;
 
 import com.littlehorizons.erp.model.Invoice;
+import com.littlehorizons.erp.model.InvoiceLine;
 
 import java.util.List;
 import java.util.Optional;
 
-/** Issued invoices (facturas). */
-public class InvoiceDao extends BaseDao {
+/** Issued invoices (facturas) and their lines (detalle_factura). */
+public interface InvoiceDao {
 
-    private static final RowMapper<Invoice> MAPPER = rs -> new Invoice(
-            rs.getInt("id_factura"), rs.getString("numero_factura"), rs.getInt("id_pago"), localDate(rs, "fecha_emision"),
-            rs.getBigDecimal("subtotal"), rs.getBigDecimal("valor_iva"), rs.getBigDecimal("total"), rs.getString("cufe"),
-            rs.getString("nombre_archivo_pdf"), rs.getString("ruta_archivo"));
+    int insert(Invoice invoice);
 
-    public int insert(Invoice i) {
-        return insert("INSERT INTO facturas (numero_factura, id_pago, fecha_emision, subtotal, valor_iva, total, cufe, "
-                        + "nombre_archivo_pdf, ruta_archivo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", i.number(), i.paymentId(),
-                i.issueDate(), i.subtotal(), i.tax(), i.total(), i.cufe(), i.fileName(), i.filePath());
-    }
+    int insertLine(InvoiceLine line);
 
-    public Optional<Invoice> findByPayment(int paymentId) {
-        return queryOne("SELECT * FROM facturas WHERE id_pago = ?", MAPPER, paymentId);
-    }
+    Optional<Invoice> findByNumber(String number);
 
-    public Optional<Invoice> findByNumber(String number) {
-        return queryOne("SELECT * FROM facturas WHERE numero_factura = ?", MAPPER, number);
-    }
+    /** The invoice that includes the payment, if it was already invoiced. */
+    Optional<Invoice> findByPayment(int paymentId);
 
-    public List<Invoice> findAll() {
-        return query("SELECT * FROM facturas ORDER BY id_factura DESC", MAPPER);
-    }
+    List<Invoice> findByStudent(int studentId);
 
-    public boolean updateFile(int invoiceId, String fileName, String path) {
-        return update("UPDATE facturas SET nombre_archivo_pdf = ?, ruta_archivo = ? WHERE id_factura = ?", fileName, path, invoiceId) > 0;
-    }
+    List<Invoice> findAll();
+
+    List<InvoiceLine> linesOf(int invoiceId);
+
+    boolean updateFile(int invoiceId, String fileName, String path);
 }
