@@ -238,6 +238,22 @@ Genera `target/erp-little-horizons-1.0.0.jar`, un JAR ejecutable con todas las d
 Al iniciar, el programa verifica la conexión con MySQL y muestra el menú principal. Si no puede conectarse, muestra un
 mensaje claro y deja el detalle técnico en `error_log.txt`.
 
+#### Buscador de estudiantes por grado (prototipo del examen)
+
+En IntelliJ seleccione **Buscador de estudiantes** y pulse **Run**. La clase
+`test.vista.BuscadorEstudiantesMain` abre su propio menú y utiliza la conexión MySQL del ERP.
+Elija **1** y luego un grado. La búsqueda muestra las matrículas activas de **2025**.
+Las opciones de edad, género, estado y promedio están reservadas para futuras versiones.
+
+Para reproducir el ejemplo en una base de demostración ya inicializada, ejecute
+[`decimo_2025.sql`](src/test/datos/decimo_2025.sql) en esa base. Agrega tres estudiantes ficticios
+de Décimo. Con los datos de ejemplo del proyecto, **1 → 11** muestra los tres y **1 → 12** muestra
+el resultado vacío. También puede ejecutar el buscador desde un JAR recién compilado:
+
+```bash
+java -cp target/erp-little-horizons-1.0.0.jar test.vista.BuscadorEstudiantesMain
+```
+
 ### 7.5. Pruebas de los flujos principales
 
 `test/com/littlehorizons/erp/SmokeTest.java` ejecuta 74 verificaciones de reglas de negocio contra la base de datos,
