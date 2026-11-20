@@ -1,0 +1,11 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Buscador de estudiantes" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="test.vista.BuscadorEstudiantesMain" />
+    <module name="erp-little-horizons" />
+    <option name="VM_PARAMETERS" value="-Dstdout.encoding=UTF-8" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

@@ -1,5 +1,6 @@
 -- Ejecutar en una base de demostración inicializada con docs/database.sql.
 -- Los documentos DEMO-BUSCA identifican exclusivamente estos datos ficticios.
+SET NAMES utf8mb4;
 START TRANSACTION;
 
 INSERT INTO estudiantes (tipo_documento, numero_documento, primer_nombre, segundo_nombre,
