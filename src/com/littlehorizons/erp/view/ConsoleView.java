@@ -15,7 +15,6 @@ import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Scanner;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -33,18 +32,18 @@ public class ConsoleView {
     private static final List<DateTimeFormatter> DATE_FORMATS = List.of(
             DateTimeFormatter.ofPattern("d/M/yyyy"), DateTimeFormatter.ISO_LOCAL_DATE);
 
-    private final Scanner scanner;
+    private final ConsoleInput input;
     private final PrintStream out;
 
     public ConsoleView() {
-        this.scanner = new Scanner(System.in, inputCharset());
+        this.input = new ConsoleInput(System.in, inputCharset());
         this.out = System.out;
     }
 
     /**
-     * Charset used to decode keyboard input (accents and ñ): the {@code lh.console.encoding}
-     * property if given; the real console encoding in a terminal; otherwise (IDE consoles such as
-     * IntelliJ) the same encoding used for standard output.
+     * Console encoding used when a typed line is not valid UTF-8 (see {@link ConsoleInput}): the
+     * {@code lh.console.encoding} property if given; the real console encoding in a terminal; otherwise
+     * (IDE consoles such as IntelliJ) the same encoding used for standard output.
      */
     private static Charset inputCharset() {
         String forced = System.getProperty("lh.console.encoding");
@@ -164,7 +163,7 @@ public class ConsoleView {
     // ================================================================ input
 
     private String nextLine() {
-        String line = scanner.nextLine().strip(); // NoSuchElementException when input ends (handled in Main)
+        String line = input.nextLine().strip(); // NoSuchElementException when input ends (handled in Main)
         if (HOME_KEYWORD.equalsIgnoreCase(line)) {
             throw new MainMenuRequestedException();
         }
